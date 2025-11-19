@@ -1,0 +1,3 @@
+<launch>
+  <node pkg="robot_ctrl_pkg" type="score_tracker_interface.py" name="our_robot" output="screen" />
+</launch>
