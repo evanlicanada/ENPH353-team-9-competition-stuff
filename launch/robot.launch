@@ -1,5 +1,12 @@
 <launch>
-  <node pkg="robot_ctrl_pkg" type="score_tracker_interface.py" name="our_robot" output="screen" />
-  <node pkg="robot_ctrl_pkg" type="teleport.py" name="teleport" output="screen" />
-  <node pkg="robot_ctrl_pkg" type="linefollow.py" name="linefollow" output="screen" />
+  <!-- <node pkg="robot_ctrl_pkg" type="score_tracker_interface.py" name="our_robot" output="screen" /> -->
+  <!-- <node pkg="robot_ctrl_pkg" type="teleport.py" name="teleport" output="screen" /> -->
+  <node pkg="robot_ctrl_pkg" type="linefollow.py" name="linefollow" output="screen">
+    <param name="debug_view" value="true"/>
+    <param name="v_min" value="0.15"/>
+    <param name="v_nominal" value="0.35"/>
+    <param name="roi_start" value="0.45"/>
+    <param name="min_pixels" value="30"/>
+    <param name="min_conf" value="0.00"/>
+  </node>  
 </launch>
