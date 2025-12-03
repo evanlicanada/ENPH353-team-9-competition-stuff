@@ -7,24 +7,28 @@ import time
 
 
 class robot_controller:
+
     def __init__(self):
-        self.twist_pub = rospy.Publisher("/B1/cmd_vel", Twist, queue_size=1)
-
+        self.text_reader = rospy.Subscriber("/text_read", String, self.send_clue)
         self.score_pub = rospy.Publisher("/score_tracker", String, queue_size=1)
-        self.move = Twist()
 
-        time.sleep(5)
+        self.sign_pos = 1
 
-        self.move.linear.x = 1
+        time.sleep(3)
 
+        self.start_timer()
+
+
+    def start_timer(self):
         self.score_pub.publish("team9,pswrd,0,0")
-        self.twist_pub.publish(self.move)
+        print("TIMER STARTED!!")
 
-        time.sleep(5)
-
-        self.move.linear.x = 0.0
-        self.twist_pub.publish(self.move)
+    def stop_timer(self):
         self.score_pub.publish("team9,pswrd,-1,0")
+
+    def send_clue(self, msg):
+        self.score_pub.publish(f"team9,pswrd,{self.sign_pos},{msg}")
+        self.sign_pos+=1
 
 
 
