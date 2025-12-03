@@ -362,20 +362,26 @@ def imageProcess(msg):
             lastRead = currRead
             text = crop_text(transformed)
             sign_text = predict_single_image(loaded_model, text, device, ALPHABET)
+
+            sign_text = spell.correction(sign_text) or sign_text
             text_pub.publish(sign_text)
-            # cv2.imshow("the image", text)
-            # cv2.waitKey(1)
+            cv2.imshow("the image", text)
+            cv2.waitKey(1)
 
             return True
         else:
             return False
     
 
+from spellchecker import SpellChecker
+
 
 if __name__ == '__main__':
     lastRead = time.time()
     rospy.init_node("sign_reader", anonymous=True)
     text_pub = rospy.Publisher("/text_read", String, queue_size=10)
+
+    spell = SpellChecker()
 
     #* Load the model
     PATH = '/home/fizzer/ros_ws/src/robot_ctrl_pkg/node/crnn_ocr_model.pth'

@@ -8,6 +8,7 @@ from std_msgs.msg import Int16
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge, CvBridgeError
+from teleport import Teleport
 
 
 class DualTrackLineFollower:
@@ -54,8 +55,8 @@ class DualTrackLineFollower:
         self.img_count = 0
         self.bridge = CvBridge()
         self.cmd_pub = rospy.Publisher(self.cmd_topic, Twist, queue_size=1)
-        self.sub = rospy.Subscriber(self.image_topic, Image, self.image_cb,
-                                    queue_size=1, buff_size=2**24)
+        #self.sub = rospy.Subscriber(self.image_topic, Image, self.image_cb,
+         #                           queue_size=1, buff_size=2**24)
         # self.cmd_pub = drive
         # self.sub = cam
 
@@ -87,6 +88,7 @@ class DualTrackLineFollower:
         # Smoothing (separate from last_center_x)
         self.edge_alpha = float(rospy.get_param("~edge_alpha", 0.25))
 
+        self.hue_filter = False
 
         rospy.loginfo("DualTrackLineFollower:")
         rospy.loginfo("  image: %s", self.image_topic)
@@ -162,6 +164,9 @@ class DualTrackLineFollower:
             return float(np.median(xs))
 
 
+    def set_hue_filter(self, condition):
+        self.hue_filter = condition 
+
     def _detect_lane_center(self, frame_bgr):
         h, w = frame_bgr.shape[:2]
 
@@ -171,6 +176,12 @@ class DualTrackLineFollower:
 
         # 2) HLS -> take L channel
         hls = cv2.cvtColor(roi, cv2.COLOR_BGR2HLS)
+        if self.hue_filter is True:
+            lower_bound = np.array([0, 0, 0])
+            upper_bound = np.array([100, 255, 255])
+            hue_mask = cv2.inRange(hls, lower_bound, upper_bound)
+            hls = cv2.bitwise_and(hls, hls, mask=hue_mask)
+
         l_channel = hls[:, :, 1]
 
         # 3) CLAHE on L
@@ -264,7 +275,7 @@ class DualTrackLineFollower:
             conf = 1.0
 
         # Case B: one contour -> ASSOCIATION using memory (prevents wrong-way turning)
-        else:
+        elif len(cxs) >= 1:
             c, x_med, _ = cxs[0]
 
             left_alive = (self.left_x is not None) and ((t - self.last_left_t) < self.edge_timeout)
@@ -447,10 +458,18 @@ class DualTrackLineFollower:
     def run(self):
         rospy.spin()
 
+
+
+# PLEASE EXCUSE THE GRABADGE CODE
+# It's too late to care now
+
+
+
 sign_num = 0
 custom_cmd = Twist()
 rospy.init_node("linefollow", anonymous=False)
-LineFollower = 0
+
+teleporter = Teleport()
 
 def state_machine(msg):
     global custom_cmd
@@ -459,31 +478,62 @@ def state_machine(msg):
     if(sign_num == 0 or sign_num == 1):
         custom_cmd.linear.x = 0.5
         drive_pub.publish(custom_cmd)
+        
     elif(sign_num == 2):
         LineFollower.image_cb(msg)
+
+    elif(sign_num == 3):
+        custom_cmd.linear.x = -0.5
+        drive_pub.publish(custom_cmd)
+        
+
 
 def adjust_sign_num(msg):
     global LineFollower
     global sign_num
     sign_num = int(msg.data)
     if(sign_num == 2):
-        LineFollower = DualTrackLineFollower(drive_pub, visual_sub)
+        print("Starting line follow")
+        #LineFollower = DualTrackLineFollower(drive_pub, visual_sub)
+    elif(sign_num == 3):
+        LineFollower.set_hue_filter(True)
+        print("TELEPORTING")
+        teleporter.teleport_quat(
+            0.510844949795797,
+            -0.03837478796610888,
+            0.040000336914908605,
+            -5.199200305817937e-07,
+            -7.904074581489652e-07,
+            -0.7270915471510727,
+            -0.6865405174209054
+        )
+    elif(sign_num == 4):
+        custom_cmd.linear.x = 1.5
+        drive_pub.publish(custom_cmd)
+
+        time.sleep(5)
+
+        custom_cmd.linear.x = 0
+        custom_cmd.angular.z = -1
+        drive_pub.publish(custom_cmd)
+
+    elif(sign_num == 5):
+        custom_cmd.angular.z = 0
+        drive_pub.publish(custom_cmd)
+        
+
     print(f"Line Follow: {sign_num}")
 
-
-
 import time
-if __name__ == "__main__":
-    
-    time.sleep(5)
-    drive_pub = rospy.Publisher("/B1/cmd_vel", Twist, queue_size=1)
-    location_sub = rospy.Subscriber("/update_pos", Int16, adjust_sign_num, queue_size=10)
-    visual_sub = rospy.Subscriber("/B1/rrbot/camera1/image_raw", Image, state_machine,
-                                    queue_size=1, buff_size=2**24)
-    
-    
-    
-    
 
-    rospy.spin()
+time.sleep(5)
+
+drive_pub = rospy.Publisher("/B1/cmd_vel", Twist, queue_size=1)
+location_sub = rospy.Subscriber("/update_pos", Int16, adjust_sign_num, queue_size=10)
+visual_sub = rospy.Subscriber("/B1/rrbot/camera1/image_raw", Image, state_machine,
+                                queue_size=1, buff_size=2**24)
+LineFollower = DualTrackLineFollower(drive_pub, visual_sub)
+
+rospy.spin()
+    
     

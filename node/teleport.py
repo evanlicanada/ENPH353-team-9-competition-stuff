@@ -55,10 +55,13 @@ rosservice call /gazebo/set_model_state "model_state:
 """
 
 class Teleport: 
-    def __init__(self, model_name="B1", reference_frame="world"):
+    def __init__(self, model_name="B1", reference_frame="world", service="/gazebo/set_model_state"):
 
         self.model_name = model_name
         self.reference_frame = reference_frame
+
+        rospy.wait_for_service(service)
+        self.set_state = rospy.ServiceProxy(service, SetModelState)
 
     def teleport(self, x, y, z, yaw):
         state = ModelState()
@@ -87,3 +90,26 @@ class Teleport:
                 rospy.logwarn("Teleport failed: %s", resp.status_message)
         except Exception as e:
             rospy.logerr("Failed to set model state: %s", e)
+          
+    def teleport_quat(self, x, y, z, qx, qy, qz, qw):
+        """Convenience: teleport using a quaternion directly (matches your saved poses)."""
+        state = ModelState()
+        state.model_name = self.model_name
+        state.reference_frame = self.reference_frame
+
+        state.pose.position.x = x
+        state.pose.position.y = y
+        state.pose.position.z = z
+
+        state.pose.orientation.x = qx
+        state.pose.orientation.y = qy
+        state.pose.orientation.z = qz
+        state.pose.orientation.w = qw
+
+        state.twist.linear.x = state.twist.linear.y = state.twist.linear.z = 0.0
+        state.twist.angular.x = state.twist.angular.y = state.twist.angular.z = 0.0
+
+        resp = self.set_state(state)
+        # if not resp.success:
+        #     rospy.logwarn("Teleport failed: %s", resp.status_message)
+
