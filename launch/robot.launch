@@ -1,5 +1,6 @@
 <launch>
-  <!-- <node pkg="robot_ctrl_pkg" type="score_tracker_interface.py" name="our_robot" output="screen" /> -->
+  <node pkg="robot_ctrl_pkg" type="score_tracker_interface.py" name="our_robot" output="screen" />
+  <node pkg="robot_ctrl_pkg" type="sign_reader.py" name="sign_reader" output="screen" />
   <!-- <node pkg="robot_ctrl_pkg" type="teleport.py" name="teleport" output="screen" /> -->
   <node pkg="robot_ctrl_pkg" type="linefollow.py" name="linefollow" output="screen">
     <param name="debug_view" value="true"/>
