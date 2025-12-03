@@ -8,6 +8,7 @@ import rospy
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
+import time
 
 from torch.utils.data import Dataset, DataLoader
 import torch
@@ -17,6 +18,7 @@ import torch.nn.functional as F
 
 bridge = CvBridge()
 target_dim = (300, 200)
+lastRead = time.time()
 
 
 #==================================================
@@ -105,6 +107,7 @@ def persp_transform(thresh):
     # cv2.imshow(cv2.resize(debug, (300, 300)))
 
     if(cv2.contourArea(second_largest_contour) < AREA_THRESH):
+      print(f"Area: {cv2.contourArea(second_largest_contour)}")
       return -1 # failed
 
     # debug = thresh
@@ -340,27 +343,34 @@ def predict_single_image(model, img, device, alphabet):
 # Reads the image
 # Returns if a sign can be read or not
 def imageProcess(msg):
-    img = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-    thresh = isolate_hue(img)
-    contours = isolate_countours(thresh)
-    transformed = persp_transform(contours)
 
-    cv2.imshow("contours", contours)
+    global lastRead
+    currRead = time.time()
 
-    # If sign found, read it and publish
-    if not isinstance(transformed, int):
-        text = crop_text(transformed)
-        cv2.imshow("text", text)
-        sign_text = predict_single_image(loaded_model, text, device, ALPHABET)
-        text_pub.publish(sign_text)
+    if(currRead - lastRead > 5):
+        img = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        thresh = isolate_hue(img)
+        contours = isolate_countours(thresh)
+        transformed = persp_transform(contours)
 
-        return True
-    else:
-        return False
+        #cv2.imshow("contours", contours)
+
+        # If sign found, read it and publish
+        if not isinstance(transformed, int):
+            lastRead = currRead
+            text = crop_text(transformed)
+            #cv2.imshow("text", text)
+            sign_text = predict_single_image(loaded_model, text, device, ALPHABET)
+            text_pub.publish(sign_text)
+
+            return True
+        else:
+            return False
     
 
 
 if __name__ == '__main__':
+    lastRead = time.time()
     rospy.init_node("sign_reader", anonymous=True)
     text_pub = rospy.Publisher("/text_read", String, queue_size=10)
 
