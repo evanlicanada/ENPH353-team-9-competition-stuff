@@ -93,7 +93,7 @@ def isolate_countours(image):
 # Check conditions, do transform
 def persp_transform(thresh):
 
-    AREA_THRESH = 10000
+    AREA_THRESH = 15000
 
     contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
@@ -349,19 +349,22 @@ def imageProcess(msg):
 
     if(currRead - lastRead > 5):
         img = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+
         thresh = isolate_hue(img)
         contours = isolate_countours(thresh)
         transformed = persp_transform(contours)
 
-        #cv2.imshow("contours", contours)
+        # cv2.imshow("contours", contours)
+        # cv2.waitKey(1)
 
         # If sign found, read it and publish
         if not isinstance(transformed, int):
             lastRead = currRead
             text = crop_text(transformed)
-            #cv2.imshow("text", text)
             sign_text = predict_single_image(loaded_model, text, device, ALPHABET)
             text_pub.publish(sign_text)
+            # cv2.imshow("the image", text)
+            # cv2.waitKey(1)
 
             return True
         else:

@@ -445,6 +445,7 @@ class DualTrackLineFollower:
     def run(self):
         rospy.spin()
 
-
+import time
 if __name__ == "__main__":
+    time.sleep(5)
     DualTrackLineFollower().run()
