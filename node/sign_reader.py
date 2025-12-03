@@ -107,7 +107,7 @@ def persp_transform(thresh):
     # cv2.imshow(cv2.resize(debug, (300, 300)))
 
     if(cv2.contourArea(second_largest_contour) < AREA_THRESH):
-      print(f"Area: {cv2.contourArea(second_largest_contour)}")
+      #print(f"Area: {cv2.contourArea(second_largest_contour)}")
       return -1 # failed
 
     # debug = thresh

@@ -4,15 +4,15 @@ import rospy
 import numpy as np
 import cv2
 import traceback
-
+from std_msgs.msg import Int16
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge, CvBridgeError
 
 
 class DualTrackLineFollower:
-    def __init__(self):
-        rospy.init_node("dual_track_line_follower", anonymous=False)
+    def __init__(self, drive, cam):
+        #rospy.init_node("dual_track_line_follower", anonymous=False)
 
         # ---------------- Parameters ----------------
         self.image_topic = rospy.get_param("~image_topic", "/B1/rrbot/camera1/image_raw")
@@ -51,10 +51,13 @@ class DualTrackLineFollower:
         self.debug_view = bool(rospy.get_param("~debug_view", False))
 
         # ---------------- ROS I/O ----------------
+        self.img_count = 0
         self.bridge = CvBridge()
         self.cmd_pub = rospy.Publisher(self.cmd_topic, Twist, queue_size=1)
         self.sub = rospy.Subscriber(self.image_topic, Image, self.image_cb,
                                     queue_size=1, buff_size=2**24)
+        # self.cmd_pub = drive
+        # self.sub = cam
 
         # ---------------- State ----------------
         self.prev_err = 0.0
@@ -70,7 +73,6 @@ class DualTrackLineFollower:
         self.l_thresh = int(rospy.get_param("~l_thresh", 170))          # threshold on enhanced L channel
         self.kernel_size = int(rospy.get_param("~kernel_size", 5))
 
-        self.img_count = 0
 
         # Edge memory
         self.left_x = None
@@ -445,7 +447,43 @@ class DualTrackLineFollower:
     def run(self):
         rospy.spin()
 
+sign_num = 0
+custom_cmd = Twist()
+rospy.init_node("linefollow", anonymous=False)
+LineFollower = 0
+
+def state_machine(msg):
+    global custom_cmd
+    global LineFollower
+    global sign_num
+    if(sign_num == 0 or sign_num == 1):
+        custom_cmd.linear.x = 0.5
+        drive_pub.publish(custom_cmd)
+    elif(sign_num == 2):
+        LineFollower.image_cb(msg)
+
+def adjust_sign_num(msg):
+    global LineFollower
+    global sign_num
+    sign_num = int(msg.data)
+    if(sign_num == 2):
+        LineFollower = DualTrackLineFollower(drive_pub, visual_sub)
+    print(f"Line Follow: {sign_num}")
+
+
+
 import time
 if __name__ == "__main__":
+    
     time.sleep(5)
-    DualTrackLineFollower().run()
+    drive_pub = rospy.Publisher("/B1/cmd_vel", Twist, queue_size=1)
+    location_sub = rospy.Subscriber("/update_pos", Int16, adjust_sign_num, queue_size=10)
+    visual_sub = rospy.Subscriber("/B1/rrbot/camera1/image_raw", Image, state_machine,
+                                    queue_size=1, buff_size=2**24)
+    
+    
+    
+    
+
+    rospy.spin()
+    
