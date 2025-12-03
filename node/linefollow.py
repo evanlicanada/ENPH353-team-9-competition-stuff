@@ -85,20 +85,6 @@ class DualTrackLineFollower:
         # Smoothing (separate from last_center_x)
         self.edge_alpha = float(rospy.get_param("~edge_alpha", 0.25))
 
-        # --- Contour selection / false positive rejection ---
-        self.cand_topk = int(rospy.get_param("~cand_topk", 8))              # keep top K candidates before picking lanes
-        self.min_contour_area = float(rospy.get_param("~min_contour_area", 1500.0))
-
-        # Reject “solid rectangles” (signs) vs thin lane paint:
-        # fill = area / bbox_area. Lanes tend to be LOW fill; signs tend to be HIGH fill.
-        self.max_fill = float(rospy.get_param("~max_fill", 0.55))
-
-        # Require contour to reach at least this far down the ROI (NOT the bottom, just “lower-ish”)
-        self.min_ymax_frac = float(rospy.get_param("~min_ymax_frac", 0.45))
-
-        # When deciding if we truly have two lanes, require a minimum x separation
-        self.min_pair_sep_frac = float(rospy.get_param("~min_pair_sep_frac", 0.35))
-
 
         rospy.loginfo("DualTrackLineFollower:")
         rospy.loginfo("  image: %s", self.image_topic)
@@ -173,9 +159,6 @@ class DualTrackLineFollower:
             # fallback: median
             return float(np.median(xs))
 
-    def touches_bottom(self, c, rh, pix=10):
-        pts = c.reshape(-1, 2)
-        return np.any(pts[:,1] > (rh - pix))
 
     def _detect_lane_center(self, frame_bgr):
         h, w = frame_bgr.shape[:2]
@@ -186,10 +169,6 @@ class DualTrackLineFollower:
 
         # 2) HLS -> take L channel
         hls = cv2.cvtColor(roi, cv2.COLOR_BGR2HLS)
-        ## lower_bound = np.array([0, 0, 0])
-        ## upper_bound = np.array([100, 255, 255])
-        ## hue_mask = cv2.inRange(hls, lower_bound, upper_bound)
-        ## hls = cv2.bitwise_and(hls, hls, mask=hue_mask)
         l_channel = hls[:, :, 1]
 
         # 3) CLAHE on L
@@ -200,7 +179,7 @@ class DualTrackLineFollower:
         blurred = cv2.GaussianBlur(enhanced_l, (5, 13), 200)
 
         # 5) Threshold (binary)_, thresh
-        _, thresh = cv2.threshold(blurred, 150, 255, cv2.THRESH_BINARY)
+        _, thresh = cv2.threshold(blurred, 160, 255, cv2.THRESH_BINARY)
 
         # 6) Morph open to remove speckle
         k = max(3, self.kernel_size | 1)
@@ -218,44 +197,11 @@ class DualTrackLineFollower:
                 self._debug_show(roi, clean, None, conf=0.0)
             return None, 0.0
 
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:2]
         contours = [
             contour for contour in contours
             if cv2.contourArea(contour) > 5000
         ]
-        
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
-        contours = contours[:self.cand_topk]
-
-        filtered = []
-        rejected = []  # for debug overlay
-
-        for c in contours:
-            area = cv2.contourArea(c)
-            if area < self.min_contour_area:
-                rejected.append((c, "area"))
-                continue
-
-            x, y, bw, bh = cv2.boundingRect(c)
-            bbox_area = float(bw * bh) + 1e-6
-            fill = float(area) / bbox_area
-
-            pts = c.reshape(-1, 2)
-            ymax = float(np.max(pts[:, 1]))
-            ymax_frac = ymax / float(rh)  # rh is ROI height
-
-            # Reject very “solid” blobs (sign interiors)
-            if fill > self.max_fill:
-                rejected.append((c, "fill"))
-                continue
-
-            # Reject stuff that lives too high in ROI (sign is typically higher than lane paint)
-            if ymax_frac < self.min_ymax_frac:
-                rejected.append((c, "ymax"))
-                continue
-
-            filtered.append(c)
-
-        contours = filtered
 
         overlay = roi.copy()
         cv2.drawContours(overlay, contours, -1, (0, 0, 255), 2)
@@ -280,10 +226,12 @@ class DualTrackLineFollower:
             cxs.append((c, x_med, area))
         cxs.sort(key=lambda z: z[2], reverse=True)
 
+        """
         if len(cxs) == 0:
             if self.debug_view:
                 self._debug_show(roi, clean, None, conf=0.0)
             return None, 0.0
+        """
 
         # Helper: smooth update
         def ema(prev, new, a):
@@ -469,7 +417,7 @@ class DualTrackLineFollower:
         # If uncertain: slow down or stop
         if center_x is None:
             rospy.logwarn_throttle(1.0, f"Stopping. center_x={center_x} conf={conf:.2f}")
-            cmd.linear.x = 0.3
+            cmd.linear.x = 0.0
             cmd.angular.z = 0.0
             self.cmd_pub.publish(cmd)
             self.integral = 0.0
