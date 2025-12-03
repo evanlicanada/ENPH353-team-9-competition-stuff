@@ -8,5 +8,8 @@
     <param name="roi_start" value="0.45"/>
     <param name="min_pixels" value="30"/>
     <param name="min_conf" value="0.00"/>
+    <param name="roi_frac" value="0.55"/>
+    <param name="l_thresh" value="165"/>
+    <param name="kernel_size" value="5"/>
   </node>  
 </launch>

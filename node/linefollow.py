@@ -3,6 +3,7 @@ import math
 import rospy
 import numpy as np
 import cv2
+import traceback
 
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Twist
@@ -27,9 +28,9 @@ class DualTrackLineFollower:
         self.band_start = float(rospy.get_param("~band_start", 0.70)) # within ROI, start y fraction (bottom band)
 
         # PID gains (start conservative; tune)
-        self.Kp = float(rospy.get_param("~Kp", 1.75))
+        self.Kp = float(rospy.get_param("~Kp", 2.5))
         self.Ki = float(rospy.get_param("~Ki", 0.00))
-        self.Kd = float(rospy.get_param("~Kd", 0.2))
+        self.Kd = float(rospy.get_param("~Kd", 0.1))
 
         # Integral anti-windup
         self.i_max = float(rospy.get_param("~i_max", 1.0))
@@ -64,6 +65,25 @@ class DualTrackLineFollower:
         self.lane_width_alpha = rospy.get_param("~lane_width_alpha", 0.2)  # smoothing
         self.min_side_pixels = rospy.get_param("~min_side_pixels", 40)     # per-side threshold
         self.last_center_x = None
+
+        self.roi_frac = float(rospy.get_param("~roi_frac", 0.50))       # use bottom 50%
+        self.l_thresh = int(rospy.get_param("~l_thresh", 170))          # threshold on enhanced L channel
+        self.kernel_size = int(rospy.get_param("~kernel_size", 5))
+
+        self.img_count = 0
+
+        # Edge memory
+        self.left_x = None
+        self.right_x = None
+        self.last_left_t = 0.0
+        self.last_right_t = 0.0
+        self.edge_timeout = float(rospy.get_param("~edge_timeout", 0.6))  # seconds keep edge "alive"
+
+        # Association gating
+        self.assoc_gate_px = float(rospy.get_param("~assoc_gate_px", 120.0))  # max jump allowed for matching
+
+        # Smoothing (separate from last_center_x)
+        self.edge_alpha = float(rospy.get_param("~edge_alpha", 0.25))
 
 
         rospy.loginfo("DualTrackLineFollower:")
@@ -119,117 +139,211 @@ class DualTrackLineFollower:
 
         return None, 0.0, None, None
 
-    # ---------- Vision ----------
+    def _inner_edge_x(self, contour, side, rw):
+        """
+        Returns the x-position of the *inner edge* of a boundary contour.
+        - side="left": take the RIGHTMOST pixels of that contour (inner edge of left boundary)
+        - side="right": take the LEFTMOST pixels of that contour (inner edge of right boundary)
+        """
+        pts = contour.reshape(-1, 2)
+        xs = pts[:, 0].astype(np.float32)
+
+        if xs.size == 0:
+            return None
+
+        if side == "left":
+            return float(np.percentile(xs, 95))
+        elif side == "right":
+            return float(np.percentile(xs, 5))
+        else:
+            # fallback: median
+            return float(np.median(xs))
+
+
     def _detect_lane_center(self, frame_bgr):
         h, w = frame_bgr.shape[:2]
 
-        # ROI crop
-        y0 = int(h * self.roi_start)
-        roi = frame_bgr[y0:h, :]
+        # 1) ROI: bottom fraction of the image
+        roi = frame_bgr[int(h/2):, :]
         rh, rw = roi.shape[:2]
 
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        hls  = cv2.cvtColor(roi, cv2.COLOR_BGR2HLS)
+        # 2) HLS -> take L channel
+        hls = cv2.cvtColor(roi, cv2.COLOR_BGR2HLS)
+        l_channel = hls[:, :, 1]
 
-        # Contrast normalize
+        # 3) CLAHE on L
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        gray_c = clahe.apply(gray)
+        enhanced_l = clahe.apply(l_channel)
 
-        # A) White paint (paved road)
-        lower = (0, self.white_L_min, 0)
-        upper = (255, 255, self.white_S_max)
-        mask_white = cv2.inRange(hls, lower, upper)
+        # 4) Blur
+        blurred = cv2.GaussianBlur(enhanced_l, (5, 13), 200)
 
-        # B) Top-hat + Otsu (faint thin features)
-        k = max(3, self.tophat_ksize | 1)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
-        tophat = cv2.morphologyEx(gray_c, cv2.MORPH_TOPHAT, kernel)
-        _, mask_tophat = cv2.threshold(tophat, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # 5) Threshold (binary)_, thresh
+        _, thresh = cv2.threshold(blurred, 160, 255, cv2.THRESH_BINARY)
 
-        mask = cv2.bitwise_or(mask_white, mask_tophat)
+        # 6) Morph open to remove speckle
+        k = max(3, self.kernel_size | 1)
+        kernel = np.ones((k, k), np.uint8)
+        clean = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
 
-        # Clean
-        mk = max(3, self.morph_ksize | 1)
-        k2 = cv2.getStructuringElement(cv2.MORPH_RECT, (mk, mk))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k2)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  k2)
+        # Optional: thicken a bit so contours form nicely
+        clean = cv2.dilate(clean, kernel, iterations=1)
+        mask_vis = clean
 
-        # --- KEY CHANGE 1: thicken thin lines so xs.size isn't tiny ---
-        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)), iterations=1)
+        # 7) Contours (external is usually better here than TREE)
+        contours, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            if self.debug_view:
+                self._debug_show(roi, clean, None, conf=0.0)
+            return None, 0.0
 
-        # --- Try multiple bands and COMPUTE a center for each (lookahead) ---
-        bands = [
-            ("top",    int(rh * 0.40), int(rh * 0.60)),  # look-ahead
-            ("mid",    int(rh * 0.60), int(rh * 0.80)),
-            ("bottom", int(rh * 0.80), rh),
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:2]
+        contours = [
+            contour for contour in contours
+            if cv2.contourArea(contour) > 5000
         ]
 
-        centers = []
-        debug_band_boxes = []
+        overlay = roi.copy()
+        cv2.drawContours(overlay, contours, -1, (0, 0, 255), 2)
 
-        for name, yA, yB in bands:
-            band = mask[yA:yB, :]
-            _, xs = np.where(band > 0)
+        # draw the remembered edges if they exist
+        if self.left_x is not None:
+            cv2.line(overlay, (int(self.left_x), 0), (int(self.left_x), rh-1), (255, 0, 0), 2)   # blue
+        if self.right_x is not None:
+            cv2.line(overlay, (int(self.right_x), 0), (int(self.right_x), rh-1), (0, 255, 255), 2) # yellow
 
-            # Require some minimum pixels in this band before using it
-            if xs.size < max(20, int(self.min_pixels * 0.25)):
+        t = rospy.Time.now().to_sec()
+
+        # Extract a representative x for each contour (use median x as a neutral feature for matching)
+        cxs = []
+        areas = []
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < 80:
                 continue
+            pts = c.reshape(-1, 2)
+            x_med = float(np.median(pts[:, 0]))
+            cxs.append((c, x_med, area))
+        cxs.sort(key=lambda z: z[2], reverse=True)
 
-            c, conf, l_in, r_in = self._center_from_xs(xs, rw)
-            if c is None:
-                continue
-
-            centers.append((name, c, conf))
-            debug_band_boxes.append((yA, yB))
-
-        if not centers:
+        if len(cxs) == 0:
             if self.debug_view:
-                self._debug_show(roi, mask, None, conf=0.0)
+                self._debug_show(roi, clean, None, conf=0.0)
             return None, 0.0
-        
-        # --------- NEW: pick a stable candidate (prevents “wrong line lock”) ---------
-        # Prefer mid band, and prefer solutions close to the previous center.
-        # This avoids the "top band latches onto crossing/branch" problem.
 
-        # Gate candidates: reject huge jumps compared to last center
-        if self.last_center_x is not None:
-            gate = 0.25 * rw  # allow up to 25% image width jump
-            gated = [(n, c, cf) for (n, c, cf) in centers if abs(c - self.last_center_x) < gate]
-            if gated:
-                centers = gated
+        # Helper: smooth update
+        def ema(prev, new, a):
+            return new if prev is None else (1 - a) * prev + a * new
 
-        band_penalty = {"mid": 0.0, "bottom": 20.0, "top": 45.0}  # px penalty (top is least reliable in that turn)
+        # Case A: two contours -> assign left/right by x and update memory
+        if len(cxs) >= 2:
+            c1, x1, _ = cxs[0]
+            c2, x2, _ = cxs[1]
+            if x1 <= x2:
+                left_c, right_c = c1, c2
+            else:
+                left_c, right_c = c2, c1
 
-        if self.last_center_x is None:
-            # no history yet: just prefer mid band
-            best_name, center_x, conf = min(centers, key=lambda t: band_penalty.get(t[0], 30.0))
+            left_inner = self._inner_edge_x(left_c, "left", rw)
+            right_inner = self._inner_edge_x(right_c, "right", rw)
+
+            self.left_x = ema(self.left_x, left_inner, self.edge_alpha)
+            self.right_x = ema(self.right_x, right_inner, self.edge_alpha)
+            self.last_left_t = t
+            self.last_right_t = t
+
+            width = self.right_x - self.left_x
+            if width > 10:
+                self.lane_width_px = ema(self.lane_width_px, width, self.lane_width_alpha)
+
+            center_x = 0.5 * (self.left_x + self.right_x)
+            conf = 1.0
+
+        # Case B: one contour -> ASSOCIATION using memory (prevents wrong-way turning)
         else:
-            # choose closest-to-last plus band penalty
-            best_name, center_x, conf = min(
-                centers,
-                key=lambda t: abs(t[1] - self.last_center_x) + band_penalty.get(t[0], 30.0)
-            )
+            c, x_med, _ = cxs[0]
 
-        # Smooth center to reduce jitter
+            left_alive = (self.left_x is not None) and ((t - self.last_left_t) < self.edge_timeout)
+            right_alive = (self.right_x is not None) and ((t - self.last_right_t) < self.edge_timeout)
+
+            # Decide whether this contour is left or right by nearest previous edge
+            side = None
+            if left_alive and right_alive:
+                if abs(x_med - self.left_x) <= abs(x_med - self.right_x):
+                    side = "left"
+                else:
+                    side = "right"
+            elif left_alive:
+                side = "left"
+            elif right_alive:
+                side = "right"
+            else:
+                # no memory yet -> last-resort fallback
+                side = "left" if x_med < (rw / 2.0) else "right"
+
+            if side == "left":
+                left_inner = self._inner_edge_x(c, "left", rw)
+                # Gate out obvious mis-associations (prevents sudden flip)
+                if left_alive and abs(left_inner - self.left_x) > self.assoc_gate_px:
+                    return None, 0.0
+
+                self.left_x = ema(self.left_x, left_inner, self.edge_alpha)
+                self.last_left_t = t
+
+                # Predict right edge
+                if right_alive:
+                    right_pred = self.right_x
+                elif self.lane_width_px is not None:
+                    right_pred = self.left_x + self.lane_width_px
+                else:
+                    return None, 0.0
+
+                center_x = 0.5 * (self.left_x + right_pred)
+                conf = 0.6
+
+            else:  # side == "right"
+                right_inner = self._inner_edge_x(c, "right", rw)
+                if right_alive and abs(right_inner - self.right_x) > self.assoc_gate_px:
+                    return None, 0.0
+
+                self.right_x = ema(self.right_x, right_inner, self.edge_alpha)
+                self.last_right_t = t
+
+                if left_alive:
+                    left_pred = self.left_x
+                elif self.lane_width_px is not None:
+                    left_pred = self.right_x - self.lane_width_px
+                else:
+                    return None, 0.0
+
+                center_x = 0.5 * (left_pred + self.right_x)
+                conf = 0.6
+
+        # Clamp and smooth center_x (optional, but helps)
+        center_x = float(np.clip(center_x, 0, rw - 1))
         if self.last_center_x is None:
             self.last_center_x = center_x
         else:
             self.last_center_x = 0.7 * self.last_center_x + 0.3 * center_x
+        center_x = float(self.last_center_x)
 
-        center_x = float(np.clip(self.last_center_x, 0, rw - 1))
-
-        # Optional debug: show chosen band name
         if self.debug_view:
-            vis = roi.copy()
-            for (yA, yB) in debug_band_boxes:
-                cv2.rectangle(vis, (0, yA), (rw-1, yB-1), (0, 255, 0), 2)
-            cv2.putText(vis, f"chosen={best_name}", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
-            self._debug_show(vis, mask, center_x, conf)
+            # center line (red)
+            cv2.line(overlay, (int(center_x), 0), (int(center_x), rh-1), (0, 0, 255), 2)
+
+            # text: conf + side memory status
+            tnow = rospy.Time.now().to_sec()
+            left_alive = (self.left_x is not None) and ((tnow - self.last_left_t) < self.edge_timeout)
+            right_alive = (self.right_x is not None) and ((tnow - self.last_right_t) < self.edge_timeout)
+            cv2.putText(overlay, f"conf={conf:.2f}  L_alive={int(left_alive)} R_alive={int(right_alive)}",
+                        (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+
+            cv2.imshow("mask", mask_vis)
+            cv2.imshow("overlay", overlay)
+            cv2.waitKey(1)
 
         return center_x, conf
-
-
+    
     def _debug_show(self, roi, mask, center_x, conf):
         # Draw center line on ROI
         vis = roi.copy()
@@ -258,9 +372,16 @@ class DualTrackLineFollower:
         return u
 
     def image_cb(self, msg: Image):
+        self.img_count += 1
+        rospy.loginfo_throttle(
+            1.0,
+            f"image_cb alive: count={self.img_count} stamp={msg.header.stamp.to_sec():.3f} enc={msg.encoding} size={msg.width}x{msg.height}"
+        )
+        
         # Convert ROS -> OpenCV
         try:
-            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         except CvBridgeError as e:
             rospy.logerr("cv_bridge: %s", e)
             return
@@ -276,7 +397,12 @@ class DualTrackLineFollower:
         self.prev_t = t
 
         # Detect lane center
-        center_x, conf = self._detect_lane_center(frame)
+        try:
+            center_x, conf = self._detect_lane_center(frame)
+        except Exception as e:
+            rospy.logerr_throttle(1.0, f"_detect_lane_center crashed: {e}\n{traceback.format_exc()}")
+            return
+
 
         if center_x is None:
             rospy.logwarn_throttle(1.0, "No lane detected -> publishing STOP")
