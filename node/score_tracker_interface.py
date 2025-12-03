@@ -30,6 +30,8 @@ class robot_controller:
 
     def send_clue(self, msg):
         self.score_pub.publish(f"team9,pswrd,{self.sign_pos},{msg.data}")
+        if(self.sign_pos == 5):
+            self.sign_pos += 1
         self.pos_pub.publish(self.sign_pos)
         self.sign_pos+=1
         print(f"Next sign: {self.sign_pos}")

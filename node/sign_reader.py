@@ -93,7 +93,7 @@ def isolate_countours(image):
 # Check conditions, do transform
 def persp_transform(thresh):
 
-    AREA_THRESH = 15000
+    AREA_THRESH = 18000
 
     contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
@@ -340,14 +340,19 @@ def predict_single_image(model, img, device, alphabet):
 
 #==================================================
 
+last_string = "this is not a possible string"
+read_buffer = []
+prep_read = False
+
 # Reads the image
 # Returns if a sign can be read or not
 def imageProcess(msg):
 
     global lastRead
+    global last_string
     currRead = time.time()
 
-    if(currRead - lastRead > 5):
+    if(currRead - lastRead > 2):
         img = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
 
         thresh = isolate_hue(img)
@@ -363,8 +368,15 @@ def imageProcess(msg):
             text = crop_text(transformed)
             sign_text = predict_single_image(loaded_model, text, device, ALPHABET)
 
-            sign_text = spell.correction(sign_text) or sign_text
-            text_pub.publish(sign_text)
+            words = sign_text.split(' ')
+            check_words = []
+            for word in words:
+                check_words.append(spell.correction(word).upper() or word.upper())
+            sign_text = " ".join(check_words)
+            
+            if(last_string != sign_text):
+                text_pub.publish(sign_text)
+                last_string = sign_text
             cv2.imshow("the image", text)
             cv2.waitKey(1)
 

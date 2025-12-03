@@ -520,6 +520,30 @@ def adjust_sign_num(msg):
     elif(sign_num == 5):
         custom_cmd.angular.z = 0
         drive_pub.publish(custom_cmd)
+    
+    elif(sign_num == 6):
+        time.sleep(2)
+        teleporter.teleport_quat(
+            -4.030194411692881,
+            -2.3089761660560773,
+            0.04000053984738465,
+            3.886040698488489e-10,
+            2.0192185688131462e-06,
+            -0.0008701127515915282,
+            -0.9999996214497896
+        )
+        custom_cmd.angular.z = 0
+        custom_cmd.linear.x = -0.5
+        drive_pub.publish(custom_cmd)
+
+    elif(sign_num == 7):
+        custom_cmd.linear.x = 0
+        drive_pub.publish(custom_cmd)
+        print("something")
+    
+    elif(sign_num == 8):
+        custom_cmd.linear.x = 0
+        drive_pub.publish(custom_cmd)
         
 
     print(f"Line Follow: {sign_num}")
