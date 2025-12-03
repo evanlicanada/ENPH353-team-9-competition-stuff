@@ -350,9 +350,11 @@ def imageProcess(msg):
 
     global lastRead
     global last_string
+    global prep_read
+    global read_buffer
     currRead = time.time()
 
-    if(currRead - lastRead > 2):
+    if(currRead - lastRead > 1):
         img = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
 
         thresh = isolate_hue(img)
@@ -364,7 +366,8 @@ def imageProcess(msg):
 
         # If sign found, read it and publish
         if not isinstance(transformed, int):
-            lastRead = currRead
+            prep_read = True
+            
             text = crop_text(transformed)
             sign_text = predict_single_image(loaded_model, text, device, ALPHABET)
 
@@ -373,15 +376,23 @@ def imageProcess(msg):
             for word in words:
                 check_words.append(spell.correction(word).upper() or word.upper())
             sign_text = " ".join(check_words)
+            read_buffer.append(sign_text)
             
-            if(last_string != sign_text):
-                text_pub.publish(sign_text)
-                last_string = sign_text
+            # if(last_string != sign_text):
+            #     text_pub.publish(sign_text)
+            #     lastRead = currRead
+            #     last_string = sign_text
             cv2.imshow("the image", text)
             cv2.waitKey(1)
 
             return True
         else:
+            if(len(read_buffer)>0):
+                most_common_string = max(set(read_buffer), key=read_buffer.count)
+                if(last_string != most_common_string):
+                    text_pub.publish(most_common_string)
+                    last_string = most_common_string
+                read_buffer = []
             return False
     
 
