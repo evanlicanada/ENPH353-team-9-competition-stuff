@@ -1,3 +1,4 @@
 <launch>
   <node pkg="robot_ctrl_pkg" type="score_tracker_interface.py" name="our_robot" output="screen" />
+  <node pkg="robot_ctrl_pkg" type="sign_reader.py" name="sign_reader" output="screen" />
 </launch>
