@@ -519,7 +519,30 @@ def adjust_sign_num(msg):
 
     elif(sign_num == 5):
         custom_cmd.angular.z = 0
+        
+        teleporter.teleport_quat(
+            -3.9368686148682714,
+            0.4785308205067239,
+            0.04000035810212277,
+            -3.996177030664801e-07,
+            7.816236706481917e-07,
+            0.9564327825571503,
+            -0.2919526202129658
+        )
+        custom_cmd.linear.x = -1
         drive_pub.publish(custom_cmd)
+        time.sleep(4)
+
+        custom_cmd.angular.z = -1
+        custom_cmd.linear.x = 0
+        drive_pub.publish(custom_cmd)
+        time.sleep(2)
+
+        custom_cmd.angular.z = 0
+        custom_cmd.linear.x = 1
+        drive_pub.publish(custom_cmd)
+
+
     
     elif(sign_num == 6):
         time.sleep(2)
